@@ -1,0 +1,3 @@
+@echo off
+echo Starting preview server...
+node node_modules/vite/bin/vite.js preview

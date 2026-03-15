@@ -1,0 +1,5 @@
+{
+  "name": "Remix: Mirona Ma Hotel Management",
+  "description": "A luxury hotel management system with offline capabilities and role-based access control.",
+  "requestFramePermissions": []
+}
