@@ -4,6 +4,7 @@ const STATIC_ASSETS = [
   '/',
   '/index.html',
   '/manifest.json',
+  '/assets/manifest-CvWkLkr0.json',
   '/assets/index-DN5gqxhc.css',
   '/assets/index-DhHZhBk_.js',
   '/assets/vendor-react-DUMCmCZE.js',
