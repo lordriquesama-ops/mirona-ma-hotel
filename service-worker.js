@@ -1,11 +1,11 @@
-const CACHE_NAME = 'mirona-hotel-v21';
+const CACHE_NAME = 'mirona-hotel-v22';
 
 const STATIC_ASSETS = [
   '/',
   '/index.html',
   '/manifest.json',
-  '/assets/index-B1EQ8E4D.css',
-  '/assets/index-luiwWSks.js',
+  '/assets/index-CX7M0ke1.css',
+  '/assets/index-BN0Pr5lL.js',
   '/assets/vendor-react-DUMCmCZE.js',
   '/assets/vendor-supabase-Cy55NjJf.js',
   '/assets/vendor-charts-CpDgngl6.js',

@@ -1,91 +1,244 @@
 /**
  * Sync Manager - Keeps IndexedDB and Supabase in sync
- * 
+ *
  * Strategy:
  * 1. Supabase is the source of truth
- * 2. IndexedDB is a local cache for offline support
- * 3. On every read, cache data locally
- * 4. On every write, update both Supabase and IndexedDB
- * 5. Periodic sync to ensure consistency
+ * 2. IndexedDB is the local cache + offline fallback
+ * 3. When online  → write to Supabase first, cache in IndexedDB
+ * 4. When offline → write to IndexedDB only, queue the operation
+ * 5. When back online → flush queue to Supabase via upsert (safe, no duplicates)
  */
 
 import { USE_SUPABASE } from './config';
 import { supabaseAdapter } from './supabase-adapter';
 
-// Cache timestamps to track freshness
+// ---------------------------------------------------------------------------
+// Cache freshness tracking
+// ---------------------------------------------------------------------------
 const cacheTimestamps: { [key: string]: number } = {};
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 
-/**
- * Check if cached data is still fresh
- */
 export function isCacheFresh(key: string): boolean {
-  const timestamp = cacheTimestamps[key];
-  if (!timestamp) return false;
-  return Date.now() - timestamp < CACHE_DURATION;
+  const ts = cacheTimestamps[key];
+  return !!ts && Date.now() - ts < CACHE_DURATION;
 }
 
-/**
- * Mark cache as fresh
- */
 export function markCacheFresh(key: string): void {
   cacheTimestamps[key] = Date.now();
 }
 
-/**
- * Invalidate cache for a specific key
- */
 export function invalidateCache(key: string): void {
   delete cacheTimestamps[key];
 }
 
-/**
- * Sync data from Supabase to IndexedDB
- * This ensures IndexedDB has the latest data
- */
-export async function syncFromSupabase(
-  storeName: string,
-  fetchFunction: () => Promise<any[]>,
-  putFunction: (item: any) => Promise<void>
-): Promise<void> {
-  if (!USE_SUPABASE) return;
+export function clearAllCaches(): void {
+  Object.keys(cacheTimestamps).forEach(k => delete cacheTimestamps[k]);
+}
 
-  try {
-    console.log(`🔄 Syncing ${storeName} from Supabase to IndexedDB...`);
-    
-    // Fetch latest data from Supabase
-    const data = await fetchFunction();
-    
-    // Update IndexedDB cache
-    for (const item of data) {
-      await putFunction(item);
-    }
-    
-    markCacheFresh(storeName);
-    console.log(`✅ Synced ${data.length} ${storeName} records`);
-  } catch (error) {
-    console.error(`❌ Sync failed for ${storeName}:`, error);
-  }
+// ---------------------------------------------------------------------------
+// Online / offline detection
+// ---------------------------------------------------------------------------
+let _online = navigator.onLine;
+
+// Listeners can subscribe to connectivity changes
+type ConnectivityListener = (online: boolean) => void;
+const connectivityListeners: ConnectivityListener[] = [];
+
+window.addEventListener('online', () => {
+  _online = true;
+  console.log('🌐 Back online – flushing offline queue...');
+  connectivityListeners.forEach(fn => fn(true));
+  flushOfflineQueue();
+});
+
+window.addEventListener('offline', () => {
+  _online = false;
+  console.log('📴 Gone offline – writes will queue to IndexedDB');
+  connectivityListeners.forEach(fn => fn(false));
+});
+
+export function isOnline(): boolean {
+  return _online;
+}
+
+export function onConnectivityChange(fn: ConnectivityListener): () => void {
+  connectivityListeners.push(fn);
+  return () => {
+    const idx = connectivityListeners.indexOf(fn);
+    if (idx !== -1) connectivityListeners.splice(idx, 1);
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Offline queue (persisted in IndexedDB store "offline_queue")
+// ---------------------------------------------------------------------------
+export interface OfflineQueueItem {
+  id: string;
+  storeName: string;           // 'bookings' | 'rooms' | 'guests' | 'services' | 'users'
+  operation: 'UPSERT' | 'DELETE';
+  data: any;
+  timestamp: string;
+  retryCount: number;
+}
+
+const OFFLINE_QUEUE_STORE = 'offline_queue';
+
+// Lazy DB handle – reuse the same connection as db.ts
+let _db: IDBDatabase | null = null;
+async function getQueueDB(): Promise<IDBDatabase> {
+  if (_db) return _db;
+  return new Promise((resolve, reject) => {
+    // Open with same DB name/version as db.ts so we share the same database
+    const req = indexedDB.open('MironaDB', 20);
+    req.onsuccess = () => { _db = req.result; resolve(_db!); };
+    req.onerror = () => reject(req.error);
+    req.onupgradeneeded = (e) => {
+      const db = (e.target as IDBOpenDBRequest).result;
+      if (!db.objectStoreNames.contains(OFFLINE_QUEUE_STORE)) {
+        db.createObjectStore(OFFLINE_QUEUE_STORE, { keyPath: 'id' });
+      }
+    };
+  });
+}
+
+async function queuePut(item: OfflineQueueItem): Promise<void> {
+  const db = await getQueueDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(OFFLINE_QUEUE_STORE, 'readwrite');
+    const req = tx.objectStore(OFFLINE_QUEUE_STORE).put(item);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function queueGetAll(): Promise<OfflineQueueItem[]> {
+  const db = await getQueueDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(OFFLINE_QUEUE_STORE, 'readonly');
+    const req = tx.objectStore(OFFLINE_QUEUE_STORE).getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function queueRemove(id: string): Promise<void> {
+  const db = await getQueueDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(OFFLINE_QUEUE_STORE, 'readwrite');
+    const req = tx.objectStore(OFFLINE_QUEUE_STORE).delete(id);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
 }
 
 /**
- * Dual-write strategy: Write to both Supabase and IndexedDB
+ * Add an operation to the offline queue.
+ * Called by db.ts when a Supabase write fails due to being offline.
  */
+export async function enqueueOfflineOp(
+  storeName: string,
+  operation: 'UPSERT' | 'DELETE',
+  data: any
+): Promise<void> {
+  const item: OfflineQueueItem = {
+    id: `oq-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+    storeName,
+    operation,
+    data,
+    timestamp: new Date().toISOString(),
+    retryCount: 0
+  };
+  await queuePut(item);
+  console.log(`📥 Queued offline ${operation} on ${storeName}:`, data?.id || data?.name || '');
+}
+
+/**
+ * Returns the number of pending offline operations.
+ */
+export async function getOfflineQueueCount(): Promise<number> {
+  const items = await queueGetAll();
+  return items.length;
+}
+
+// ---------------------------------------------------------------------------
+// Flush offline queue → Supabase
+// ---------------------------------------------------------------------------
+let _flushing = false;
+
+export async function flushOfflineQueue(): Promise<void> {
+  if (!USE_SUPABASE || !_online || _flushing) return;
+  _flushing = true;
+
+  try {
+    const items = await queueGetAll();
+    if (items.length === 0) { _flushing = false; return; }
+
+    console.log(`🔄 Flushing ${items.length} offline operations to Supabase...`);
+
+    // Sort oldest-first so operations replay in order
+    items.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+    for (const item of items) {
+      try {
+        await applyToSupabase(item);
+        await queueRemove(item.id);
+        console.log(`✅ Flushed ${item.operation} ${item.storeName}:`, item.data?.id || '');
+      } catch (err: any) {
+        item.retryCount += 1;
+        await queuePut(item);
+        console.warn(`⚠️ Flush failed (retry ${item.retryCount}) for ${item.storeName}:`, err.message);
+        // If network dropped again mid-flush, stop
+        if (!_online) break;
+      }
+    }
+
+    // After flush, invalidate caches so next read pulls fresh data from Supabase
+    clearAllCaches();
+    console.log('✅ Offline queue flushed. Caches invalidated.');
+  } finally {
+    _flushing = false;
+  }
+}
+
+async function applyToSupabase(item: OfflineQueueItem): Promise<void> {
+  const { storeName, operation, data } = item;
+
+  if (operation === 'DELETE') {
+    switch (storeName) {
+      case 'bookings': return supabaseAdapter.deleteBooking(data.id);
+      case 'rooms':    return supabaseAdapter.deleteRoom(data.id);
+      case 'guests':   return supabaseAdapter.deleteGuest(data.id);
+      case 'services': return supabaseAdapter.deleteService(data.id);
+      case 'users':    return supabaseAdapter.deleteUser(data.id);
+      default: console.warn('No Supabase delete handler for store:', storeName);
+    }
+    return;
+  }
+
+  // UPSERT
+  switch (storeName) {
+    case 'bookings': { await supabaseAdapter.saveBooking(data); return; }
+    case 'rooms':    { await supabaseAdapter.updateRoom(data); return; }
+    case 'guests':   { await supabaseAdapter.upsertGuest(data); return; }
+    case 'services': { await supabaseAdapter.addService(data); return; }
+    case 'users':    { await supabaseAdapter.updateUser(data); return; }
+    default: console.warn('No Supabase upsert handler for store:', storeName);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Dual-read / dual-write helpers (used by db.ts)
+// ---------------------------------------------------------------------------
+
 export async function dualWrite<T>(
   supabaseWrite: () => Promise<T>,
   indexedDBWrite: () => Promise<void>,
   storeName: string
 ): Promise<T> {
   try {
-    // Write to Supabase first (source of truth)
     const result = await supabaseWrite();
-    
-    // Then update IndexedDB cache
     await indexedDBWrite();
-    
-    // Invalidate cache to force refresh on next read
     invalidateCache(storeName);
-    
     return result;
   } catch (error) {
     console.error(`❌ Dual write failed for ${storeName}:`, error);
@@ -93,112 +246,85 @@ export async function dualWrite<T>(
   }
 }
 
-/**
- * Dual-read strategy: Read from Supabase, cache in IndexedDB
- * Clears the IndexedDB store before writing to prevent ghost records
- */
 export async function dualRead<T>(
   supabaseRead: () => Promise<T[]>,
   indexedDBWrite: (items: T[]) => Promise<void>,
   indexedDBRead: () => Promise<T[]>,
   storeName: string,
-  clearStore?: () => Promise<void>  // optional clear function
+  clearStore?: () => Promise<void>
 ): Promise<T[]> {
-  if (!USE_SUPABASE) {
+  if (!USE_SUPABASE) return indexedDBRead();
+
+  // If offline, always use cache
+  if (!_online) {
+    console.log(`📴 Offline – reading ${storeName} from IndexedDB cache`);
     return indexedDBRead();
   }
 
   try {
     if (isCacheFresh(storeName)) {
-      console.log(`📦 Using cached ${storeName}`);
       return indexedDBRead();
     }
 
-    console.log(`☁️ Fetching ${storeName} from Supabase...`);
     const data = await supabaseRead();
-    
-    // Clear stale IndexedDB records before writing fresh data
-    // This prevents deleted records from reappearing
-    if (clearStore) {
-      await clearStore();
-    }
-    
+    if (clearStore) await clearStore();
     await indexedDBWrite(data);
     markCacheFresh(storeName);
-    
-    console.log(`✅ Fetched and cached ${data.length} ${storeName} records`);
     return data;
   } catch (error) {
-    console.error(`❌ Supabase read failed for ${storeName}, falling back to cache:`, error);
+    console.error(`❌ Supabase read failed for ${storeName}, using cache:`, error);
     return indexedDBRead();
   }
 }
 
-/**
- * Full sync: Sync all data from Supabase to IndexedDB
- */
+// ---------------------------------------------------------------------------
+// Full sync (Supabase → IndexedDB)
+// ---------------------------------------------------------------------------
 export async function fullSync(): Promise<void> {
-  if (!USE_SUPABASE) {
-    console.log('⚠️ Supabase disabled, skipping sync');
-    return;
-  }
+  if (!USE_SUPABASE || !_online) return;
 
-  console.log('🔄 Starting full sync from Supabase to IndexedDB...');
-  
   try {
-    // Import functions dynamically to avoid circular dependencies
     const { getRooms, getBookings, getGuests, getServices, getRoomCategories, getUsers } = await import('./db');
-    
-    // Sync all data
-    await Promise.all([
-      getRooms(),
-      getBookings(),
-      getGuests(),
-      getServices(),
-      getRoomCategories(),
-      getUsers()
-    ]);
-    
-    console.log('✅ Full sync completed successfully');
+    await Promise.all([getRooms(), getBookings(), getGuests(), getServices(), getRoomCategories(), getUsers()]);
+    console.log('✅ Full sync completed');
   } catch (error) {
     console.error('❌ Full sync failed:', error);
   }
 }
 
-/**
- * Auto-sync on app start
- */
+// ---------------------------------------------------------------------------
+// Auto-sync init
+// ---------------------------------------------------------------------------
 export function initAutoSync(): void {
   if (!USE_SUPABASE) return;
 
-  // First, sync IndexedDB data to Supabase (one-time push)
-  setTimeout(async () => {
-    try {
-      const { syncIndexedDBToSupabase } = await import('./db');
-      await syncIndexedDBToSupabase();
-      console.log('✅ Initial IndexedDB → Supabase sync completed');
-    } catch (error) {
-      console.error('❌ Initial sync failed:', error);
-    }
-    
-    // Then start regular sync (Supabase → IndexedDB)
-    fullSync();
-  }, 1000);
+  // Flush any queued ops from previous offline session immediately
+  if (_online) {
+    setTimeout(() => flushOfflineQueue(), 2000);
+  }
 
-  // Periodic sync every 5 minutes
+  // Periodic full sync every 5 minutes (only when online)
   setInterval(() => {
-    fullSync();
+    if (_online) fullSync();
   }, 5 * 60 * 1000);
 
-  console.log('✅ Auto-sync initialized');
+  console.log('✅ Auto-sync initialized (offline-first mode)');
 }
 
-/**
- * Clear all caches (force fresh fetch on next read)
- */
-export function clearAllCaches(): void {
-  Object.keys(cacheTimestamps).forEach(key => {
-    delete cacheTimestamps[key];
-  });
-  console.log('🗑️ All caches cleared');
+// ---------------------------------------------------------------------------
+// Legacy helpers kept for compatibility
+// ---------------------------------------------------------------------------
+export async function syncFromSupabase(
+  storeName: string,
+  fetchFunction: () => Promise<any[]>,
+  putFunction: (item: any) => Promise<void>
+): Promise<void> {
+  if (!USE_SUPABASE || !_online) return;
+  try {
+    const data = await fetchFunction();
+    for (const item of data) await putFunction(item);
+    markCacheFresh(storeName);
+  } catch (error) {
+    console.error(`❌ syncFromSupabase failed for ${storeName}:`, error);
+  }
 }

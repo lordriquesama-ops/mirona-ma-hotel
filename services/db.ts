@@ -4,10 +4,10 @@ import { User, Role, AuditLogEntry, RoomCategory, ServiceItem, ExpenseRecord, Sy
 import { api } from './api';
 import { USE_BACKEND, USE_SUPABASE, ENDPOINTS } from './config';
 import { supabaseAdapter } from './supabase-adapter';
-import { dualRead, dualWrite, markCacheFresh } from './sync-manager';
+import { dualRead, dualWrite, markCacheFresh, isOnline, enqueueOfflineOp, invalidateCache } from './sync-manager';
 
 const DB_NAME = 'MironaDB';
-const DB_VERSION = 19; // Increment for room count reduction
+const DB_VERSION = 20; // Added offline_queue store
 
 const CATEGORY_ORDER = ['platinum', 'gold', 'silver', 'safari'];
 
@@ -104,11 +104,10 @@ export const initDB = (): Promise<IDBDatabase> => {
           if (db.objectStoreNames.contains('rooms')) db.deleteObjectStore('rooms');
           if (db.objectStoreNames.contains('room_categories')) db.deleteObjectStore('room_categories');
       }
-
       const stores = [
           'settings', 'bookings', 'room_categories', 'services_catalog',
           'expenses', 'shifts', 'rooms', 'website_content', 'notifications',
-          'sync_queue'
+          'sync_queue', 'offline_queue'
       ];
 
       stores.forEach(store => {
@@ -393,14 +392,26 @@ export const getUsers = async (): Promise<User[]> => {
 export const addUser = async (user: User) => {
     // Use Supabase if enabled
     if (USE_SUPABASE) {
+        if (!isOnline()) {
+            console.log('📴 Offline – queuing user add:', user.username);
+            const hashedPassword = await bcrypt.hash(user.password, 10);
+            await put('users', { ...user, password: hashedPassword });
+            await enqueueOfflineOp('users', 'UPSERT', user);
+            return user;
+        }
         try {
             const savedUser = await supabaseAdapter.addUser(user);
-            console.log('✅ User added to Supabase:', savedUser.username);
-            // Also save to IndexedDB for cache
             const hashedPassword = await bcrypt.hash(user.password, 10);
             await put('users', { ...user, password: hashedPassword });
             return savedUser;
         } catch (error: any) {
+            if (!navigator.onLine || error.message?.includes('fetch') || error.message?.includes('network')) {
+                console.warn('⚠️ Supabase unreachable – queuing user add:', user.username);
+                const hashedPassword = await bcrypt.hash(user.password, 10);
+                await put('users', { ...user, password: hashedPassword });
+                await enqueueOfflineOp('users', 'UPSERT', user);
+                return user;
+            }
             console.error('❌ Supabase addUser failed:', error.message);
             throw error;
         }
@@ -416,12 +427,14 @@ export const addUser = async (user: User) => {
 export const updateUser = async (user: User) => {
     // Use Supabase if enabled
     if (USE_SUPABASE) {
+        if (!isOnline()) {
+            console.log('📴 Offline – queuing user update:', user.username);
+            await put('users', user);
+            await enqueueOfflineOp('users', 'UPSERT', user);
+            return user;
+        }
         try {
             const updatedUser = await supabaseAdapter.updateUser(user);
-            console.log('✅ User updated in Supabase:', updatedUser.username);
-            
-            // Also update IndexedDB for cache
-            // Handle password hashing for local cache
             if (user.password && !user.password.startsWith('$2a$')) {
                 user.password = await bcrypt.hash(user.password, 10);
             } else if (!user.password) {
@@ -431,13 +444,17 @@ export const updateUser = async (user: User) => {
                     const req = tx.objectStore('users').get(user.id);
                     req.onsuccess = () => resolve(req.result);
                 });
-                if (oldUser) {
-                    user.password = oldUser.password;
-                }
+                if (oldUser) user.password = oldUser.password;
             }
             await put('users', user);
             return updatedUser;
         } catch (error: any) {
+            if (!navigator.onLine || error.message?.includes('fetch') || error.message?.includes('network')) {
+                console.warn('⚠️ Supabase unreachable – queuing user update:', user.username);
+                await put('users', user);
+                await enqueueOfflineOp('users', 'UPSERT', user);
+                return user;
+            }
             console.error('❌ Supabase updateUser failed:', error.message);
             throw error;
         }
@@ -465,13 +482,23 @@ export const updateUser = async (user: User) => {
 export const deleteUser = async (id: string) => {
     // Use Supabase if enabled
     if (USE_SUPABASE) {
+        if (!isOnline()) {
+            console.log('📴 Offline – queuing user delete:', id);
+            await remove('users', id);
+            await enqueueOfflineOp('users', 'DELETE', { id });
+            return;
+        }
         try {
             await supabaseAdapter.deleteUser(id);
-            console.log('✅ User deleted from Supabase:', id);
-            // Also remove from IndexedDB cache
             await remove('users', id);
             return;
         } catch (error: any) {
+            if (!navigator.onLine || error.message?.includes('fetch') || error.message?.includes('network')) {
+                console.warn('⚠️ Supabase unreachable – queuing user delete:', id);
+                await remove('users', id);
+                await enqueueOfflineOp('users', 'DELETE', { id });
+                return;
+            }
             console.error('❌ Supabase deleteUser failed:', error.message);
             throw error;
         }
@@ -558,19 +585,26 @@ export const getRooms = async (): Promise<Room[]> => {
 export const updateRoom = async (room: Room) => {
     // Use Supabase if enabled
     if (USE_SUPABASE) {
+        if (!isOnline()) {
+            console.log('📴 Offline – queuing room update:', room.id);
+            await put('rooms', room);
+            await enqueueOfflineOp('rooms', 'UPSERT', room);
+            invalidateCache('rooms');
+            return room;
+        }
         try {
             const updatedRoom = await supabaseAdapter.updateRoom(room);
-            console.log('✅ Room updated in Supabase:', updatedRoom.id);
-            
-            // Invalidate cache to force fresh read
-            const { invalidateCache } = await import('./sync-manager');
             invalidateCache('rooms');
-            
-            // Also update IndexedDB cache immediately
             await put('rooms', updatedRoom);
-            
             return updatedRoom;
         } catch (error: any) {
+            if (!navigator.onLine || error.message?.includes('fetch') || error.message?.includes('network')) {
+                console.warn('⚠️ Supabase unreachable – queuing room update:', room.id);
+                await put('rooms', room);
+                await enqueueOfflineOp('rooms', 'UPSERT', room);
+                invalidateCache('rooms');
+                return room;
+            }
             console.error('❌ Supabase updateRoom failed:', error.message);
             throw error;
         }
@@ -596,19 +630,26 @@ export const updateRoom = async (room: Room) => {
 export const addRoom = async (room: Room) => {
     // Use Supabase if enabled
     if (USE_SUPABASE) {
+        if (!isOnline()) {
+            console.log('📴 Offline – queuing room add:', room.id);
+            await put('rooms', room);
+            await enqueueOfflineOp('rooms', 'UPSERT', room);
+            invalidateCache('rooms');
+            return room;
+        }
         try {
             const newRoom = await supabaseAdapter.addRoom(room);
-            console.log('✅ Room added to Supabase:', newRoom.id);
-            
-            // Invalidate cache to force fresh read
-            const { invalidateCache } = await import('./sync-manager');
             invalidateCache('rooms');
-            
-            // Also add to IndexedDB cache immediately
             await put('rooms', newRoom);
-            
             return newRoom;
         } catch (error: any) {
+            if (!navigator.onLine || error.message?.includes('fetch') || error.message?.includes('network')) {
+                console.warn('⚠️ Supabase unreachable – queuing room add:', room.id);
+                await put('rooms', room);
+                await enqueueOfflineOp('rooms', 'UPSERT', room);
+                invalidateCache('rooms');
+                return room;
+            }
             console.error('❌ Supabase addRoom failed:', error.message);
             throw error;
         }
@@ -634,19 +675,26 @@ export const addRoom = async (room: Room) => {
 export const deleteRoom = async (id: string) => {
     // Use Supabase if enabled
     if (USE_SUPABASE) {
+        if (!isOnline()) {
+            console.log('📴 Offline – queuing room delete:', id);
+            await remove('rooms', id);
+            await enqueueOfflineOp('rooms', 'DELETE', { id });
+            invalidateCache('rooms');
+            return;
+        }
         try {
             await supabaseAdapter.deleteRoom(id);
-            console.log('✅ Room deleted from Supabase:', id);
-            
-            // Invalidate cache to force fresh read
-            const { invalidateCache } = await import('./sync-manager');
             invalidateCache('rooms');
-            
-            // Also remove from IndexedDB cache immediately
             await remove('rooms', id);
-            
             return;
         } catch (error: any) {
+            if (!navigator.onLine || error.message?.includes('fetch') || error.message?.includes('network')) {
+                console.warn('⚠️ Supabase unreachable – queuing room delete:', id);
+                await remove('rooms', id);
+                await enqueueOfflineOp('rooms', 'DELETE', { id });
+                invalidateCache('rooms');
+                return;
+            }
             console.error('❌ Supabase deleteRoom failed:', error.message);
             throw error;
         }
@@ -704,20 +752,37 @@ export const getBookings = async (): Promise<Booking[]> => {
 export const saveBooking = async (booking: Booking) => {
     // Use Supabase if enabled
     if (USE_SUPABASE) {
+        if (!isOnline()) {
+            // Offline: save to IndexedDB and queue for later sync
+            console.log('📴 Offline – saving booking to IndexedDB queue:', booking.id);
+            await put('bookings', booking);
+            await enqueueOfflineOp('bookings', 'UPSERT', booking);
+            invalidateCache('bookings');
+            return booking;
+        }
         try {
             const savedBooking = await supabaseAdapter.saveBooking(booking);
             console.log('✅ Booking saved to Supabase:', savedBooking.id);
+            // Update local cache with the Supabase-returned record
+            await put('bookings', savedBooking);
             
             // CRM: Update Guest Profile automatically (non-blocking)
             try {
                 await upsertGuestFromBooking(savedBooking);
             } catch (guestError) {
                 console.warn('⚠️ Guest update failed (non-critical):', guestError);
-                // Don't throw - booking is already saved
             }
             
             return savedBooking;
         } catch (error: any) {
+            // Network error mid-request – fall back to offline mode
+            if (!navigator.onLine || error.message?.includes('fetch') || error.message?.includes('network')) {
+                console.warn('⚠️ Supabase unreachable – queuing booking for sync:', booking.id);
+                await put('bookings', booking);
+                await enqueueOfflineOp('bookings', 'UPSERT', booking);
+                invalidateCache('bookings');
+                return booking;
+            }
             console.error('❌ Supabase saveBooking failed:', error.message);
             throw error;
         }
@@ -761,11 +826,26 @@ export const saveBooking = async (booking: Booking) => {
 export const deleteBooking = async (id: string) => {
     // Use Supabase if enabled
     if (USE_SUPABASE) {
+        if (!isOnline()) {
+            console.log('📴 Offline – queuing booking delete:', id);
+            await remove('bookings', id);
+            await enqueueOfflineOp('bookings', 'DELETE', { id });
+            invalidateCache('bookings');
+            return;
+        }
         try {
             await supabaseAdapter.deleteBooking(id);
+            await remove('bookings', id);
             console.log('✅ Booking deleted from Supabase:', id);
             return;
         } catch (error: any) {
+            if (!navigator.onLine || error.message?.includes('fetch') || error.message?.includes('network')) {
+                console.warn('⚠️ Supabase unreachable – queuing booking delete:', id);
+                await remove('bookings', id);
+                await enqueueOfflineOp('bookings', 'DELETE', { id });
+                invalidateCache('bookings');
+                return;
+            }
             console.error('❌ Supabase deleteBooking failed:', error.message);
             throw error;
         }
@@ -848,16 +928,28 @@ export const getGuests = async (): Promise<Guest[]> => {
 export const saveGuest = async (guest: Guest) => {
     // Use Supabase if enabled
     if (USE_SUPABASE) {
+        if (!isOnline()) {
+            console.log('📴 Offline – queuing guest save:', guest.id);
+            await put('guests', guest);
+            await enqueueOfflineOp('guests', 'UPSERT', guest);
+            invalidateCache('guests');
+            return guest;
+        }
         try {
             const savedGuest = await supabaseAdapter.upsertGuest(guest);
-            console.log('✅ Guest saved to Supabase:', savedGuest.id);
+            await put('guests', savedGuest);
             return savedGuest;
         } catch (error: any) {
+            if (!navigator.onLine || error.message?.includes('fetch') || error.message?.includes('network')) {
+                console.warn('⚠️ Supabase unreachable – queuing guest save:', guest.id);
+                await put('guests', guest);
+                await enqueueOfflineOp('guests', 'UPSERT', guest);
+                invalidateCache('guests');
+                return guest;
+            }
             console.error('❌ Supabase saveGuest failed:', error.message);
-            // Don't throw - this is often called from booking save
-            // and shouldn't block the booking operation
-            console.warn('⚠️ Continuing without guest update...');
-            return guest; // Return original guest to prevent cascade failures
+            // Non-blocking – don't throw from guest saves
+            return guest;
         }
     }
     
@@ -870,11 +962,25 @@ export const saveGuest = async (guest: Guest) => {
 export const deleteGuest = async (id: string) => {
     // Use Supabase if enabled
     if (USE_SUPABASE) {
+        if (!isOnline()) {
+            console.log('📴 Offline – queuing guest delete:', id);
+            await remove('guests', id);
+            await enqueueOfflineOp('guests', 'DELETE', { id });
+            invalidateCache('guests');
+            return;
+        }
         try {
             await supabaseAdapter.deleteGuest(id);
-            console.log('✅ Guest deleted from Supabase:', id);
+            await remove('guests', id);
             return;
         } catch (error: any) {
+            if (!navigator.onLine || error.message?.includes('fetch') || error.message?.includes('network')) {
+                console.warn('⚠️ Supabase unreachable – queuing guest delete:', id);
+                await remove('guests', id);
+                await enqueueOfflineOp('guests', 'DELETE', { id });
+                invalidateCache('guests');
+                return;
+            }
             console.error('❌ Supabase deleteGuest failed:', error.message);
             throw error;
         }
