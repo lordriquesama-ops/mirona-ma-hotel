@@ -1404,15 +1404,18 @@ const Bookings: React.FC<BookingsProps> = ({ user }) => {
       {showForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden max-h-[95vh] flex flex-col">
-                <div className="bg-teal-700 p-6 flex justify-between items-center shrink-0">
+                {/* Sticky Header */}
+                <div className="bg-teal-700 p-5 flex justify-between items-center shrink-0">
                     <h3 className="text-lg font-bold text-white flex items-center gap-2">
                         {isEditing ? <PencilIcon className="w-5 h-5" /> : <CalendarIcon className="w-5 h-5" />}
                         {isEditing ? 'Edit Booking' : 'New Reservation'}
                     </h3>
-                    <button onClick={handleCloseForm} className="text-teal-100 hover:text-white">✕</button>
+                    <button onClick={handleCloseForm} className="text-teal-100 hover:text-white text-xl leading-none">✕</button>
                 </div>
                 
-                <form onSubmit={handleSubmit} className="p-5 space-y-4 overflow-y-auto">
+                {/* Scrollable Body */}
+                <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
+                    <div className="overflow-y-auto flex-1 p-5 space-y-4">
                     {/* Section 1: Guest Info */}
                     <div className="bg-gray-50/50 p-4 rounded-xl border border-gray-100">
                         <h4 className="text-[10px] font-bold text-teal-600 uppercase tracking-wider mb-4 flex items-center gap-2">
@@ -1672,9 +1675,10 @@ const Bookings: React.FC<BookingsProps> = ({ user }) => {
                         </div>
                     )}
 
-                    {/* Submit Buttons */}
-                    <div className="pt-2 flex justify-end gap-3 border-t border-gray-100">
-                        <button type="button" onClick={handleCloseForm} className="px-6 py-2 text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
+                    </div>{/* end scrollable body */}
+                    {/* Sticky Footer */}
+                    <div className="shrink-0 px-5 py-4 border-t border-gray-100 bg-white flex justify-end gap-3">
+                        <button type="button" onClick={handleCloseForm} className="px-6 py-2 text-gray-600 hover:bg-gray-100 rounded-lg font-medium">Cancel</button>
                         <button 
                             type="submit" 
                             disabled={availableRooms.length === 0 && !isEditing}
