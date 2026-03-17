@@ -236,12 +236,10 @@ const Dashboard: React.FC<DashboardProps> = ({ role, onNavigate }) => {
         setRecentActivity([...bookings].sort((a,b) => Number(b.id) - Number(a.id)).slice(0,5));
         setWebContent(website);
 
-        // Chart Data - Last 7 days revenue (real data from bookings)
-        // Revenue is spread across each day of the stay (daily rate)
+        // Chart Data - Last 7 days revenue
+        // Revenue recognized on check-out date for CHECKED_OUT bookings
+        // Also count bookings created each day for context
         const chart = [];
-        console.log('📊 Building revenue chart for last 7 days...');
-        console.log(`   Total bookings: ${bookings.length}`);
-        console.log(`   Checked-out bookings: ${bookings.filter(b => b.status === 'CHECKED_OUT').length}`);
         
         for (let i = 6; i >= 0; i--) {
             const d = new Date();
@@ -251,52 +249,44 @@ const Dashboard: React.FC<DashboardProps> = ({ role, onNavigate }) => {
             let dayBookings = 0;
             
             bookings.forEach(b => {
-                // Only CHECKED_OUT bookings, count actual amount paid (including partial)
                 const isCheckedOut = b.status === 'CHECKED_OUT';
                 const totalPaid = b.paidAmount || 0;
                 const totalGross = getTaxBreakdown(b.amount, taxRate).grandTotal;
                 const paymentRatio = totalGross > 0 ? totalPaid / totalGross : (totalPaid > 0 ? 1 : 0);
 
+                // Normalize dates - strip time component if present
+                const bookingDate = (b.date || '').substring(0, 10);
+                const checkOutDate = (b.checkOut || b.checkOutDate || '').substring(0, 10);
+
                 // Count bookings created on this date
-                const bookingDate = b.date ? b.date.split('T')[0] : '';
-                if (bookingDate === dateStr) {
-                    dayBookings++;
+                if (bookingDate === dateStr) dayBookings++;
+
+                // Revenue recognized on check-out date
+                if (isCheckedOut && totalPaid > 0 && checkOutDate === dateStr) {
+                    const chargesTotal = b.charges ? b.charges.reduce((sum: number, c: any) => sum + c.amount, 0) : 0;
+                    const roomRevenue = (b.amount - chargesTotal) * paymentRatio;
+                    const chargesRevenue = chargesTotal * paymentRatio;
+                    dayRev += roomRevenue + chargesRevenue;
                 }
 
-                // Revenue recognized on check-out date (proportional to payment)
-                if (isCheckedOut && totalPaid > 0) {
-                    const checkOutDate = b.checkOut || '';
-                    
-                    if (checkOutDate === dateStr) {
-                        // Calculate room revenue (excluding service charges)
-                        const chargesTotal = b.charges ? b.charges.reduce((sum, c) => sum + c.amount, 0) : 0;
-                        const roomRevenue = (b.amount - chargesTotal) * paymentRatio;
-                        dayRev += roomRevenue;
-                        console.log(`   ${dateStr}: ${b.guestName} - Room revenue on checkout: ${roomRevenue.toFixed(2)} (${(paymentRatio * 100).toFixed(0)}% paid)`);
-                        
-                        // Service charges also recognized on checkout (proportional)
-                        if (b.charges) {
-                            const chargesRevenue = b.charges.reduce((sum, c) => sum + c.amount, 0) * paymentRatio;
-                            dayRev += chargesRevenue;
-                            console.log(`   ${dateStr}: ${b.guestName} - Service charges: ${chargesRevenue.toFixed(2)}`);
-                        }
+                // Also count CHECKED_IN bookings' paid amount on their check-in date
+                // so the chart isn't always empty if no checkouts yet
+                if (b.status === 'CHECKED_IN' && totalPaid > 0) {
+                    const checkInDate = (b.checkIn || b.checkInDate || '').substring(0, 10);
+                    if (checkInDate === dateStr) {
+                        dayRev += totalPaid;
                     }
                 }
             });
             
             const grossRev = getTaxBreakdown(dayRev, taxRate).grandTotal;
-            console.log(`   ${dateStr} (${d.toLocaleDateString('en-GB', {weekday:'short'})}): Revenue = ${grossRev.toFixed(2)}, Bookings = ${dayBookings}`);
-            
-            // Always add all 7 days to show the full week, even if zero
             chart.push({ 
                 name: d.toLocaleDateString('en-GB', {weekday:'short'}), 
-                revenue: grossRev,
+                revenue: Math.round(grossRev),
                 bookings: dayBookings
             });
         }
         
-        console.log('📊 Chart data:', chart);
-        console.log('📊 Chart has data?', chart.some(d => d.revenue > 0 || d.bookings > 0));
         setChartData(chart);
 
         setOccupancyData([
