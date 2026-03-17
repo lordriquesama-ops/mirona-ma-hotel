@@ -3,6 +3,21 @@
 -- Run this entire file in Supabase SQL Editor
 -- ============================================================
 
+-- 0. NOTIFICATIONS TABLE (cross-device real-time notifications)
+CREATE TABLE IF NOT EXISTS notifications (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  message TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'info' CHECK (type IN ('success', 'error', 'info', 'warning')),
+  timestamp TIMESTAMPTZ DEFAULT NOW(),
+  read BOOLEAN DEFAULT FALSE,
+  target_roles JSONB DEFAULT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow all notifications" ON notifications;
+CREATE POLICY "Allow all notifications" ON notifications FOR ALL USING (true) WITH CHECK (true);
+
 -- 1. BOOKING SOURCE COLUMN
 ALTER TABLE bookings ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'admin'
   CHECK (source IN ('admin', 'website', 'phone', 'walkin'));

@@ -1927,10 +1927,6 @@ const Bookings: React.FC<BookingsProps> = ({ user }) => {
                         <span>TOTAL PAID:</span>
                         <span>{settings.currency} {(selectedBooking.paidAmount || 0).toLocaleString()}</span>
                     </div>
-                    <div className="flex justify-between text-[11px] font-bold text-black border-t border-dashed border-black/20 pt-1">
-                        <span>{getConsumptionDetails(selectedBooking, settings.taxRate).remaining < 0 ? 'BALANCE DUE:' : 'REMAINING CREDIT:'}</span>
-                        <span>{settings.currency} {Math.abs(getConsumptionDetails(selectedBooking, settings.taxRate).remaining).toLocaleString()}</span>
-                    </div>
                 </div>
 
                 <div className="mt-8 text-center space-y-2">

@@ -253,57 +253,28 @@ export const supabaseAdapter = {
   async saveBooking(booking: Booking): Promise<Booking> {
     const bookingData = mapBookingToSupabase(booking);
     
-    if (booking.id && booking.id !== 'NEW' && booking.id.length > 20) {
-      // Update existing booking (UUIDs are longer than 20 chars)
-      console.log('📝 Updating booking:', booking.id);
+    // Always try update first if we have an ID, fall back to insert
+    if (booking.id && booking.id !== 'NEW') {
+      console.log('📝 Saving booking (upsert):', booking.id);
       
-      // First check if booking exists
-      const { data: existing } = await supabase
-        .from(TABLES.BOOKINGS)
-        .select('id')
-        .eq('id', booking.id)
-        .single();
-      
-      if (!existing) {
-        console.warn(`⚠️ Booking ${booking.id} not found in Supabase, creating new one`);
-        // Booking doesn't exist, create it instead
-        const { data, error } = await supabase
-          .from(TABLES.BOOKINGS)
-          .insert({
-            ...bookingData,
-            id: booking.id, // Keep the same ID
-            booking_number: booking.bookingNumber || generateBookingNumber()
-          })
-          .select()
-          .single();
-
-        if (error) {
-          console.error('❌ Insert error:', error);
-          throw error;
-        }
-        return mapBookingFromSupabase(data);
-      }
-      
-      // Booking exists, update it
       const { data, error } = await supabase
         .from(TABLES.BOOKINGS)
-        .update(bookingData)
-        .eq('id', booking.id)
+        .upsert({
+          ...bookingData,
+          id: booking.id,
+          booking_number: booking.bookingNumber || generateBookingNumber()
+        }, { onConflict: 'id' })
         .select();
 
       if (error) {
-        console.error('❌ Update error:', error);
+        console.error('❌ Upsert error:', error);
         throw error;
       }
-      
+
       if (!data || data.length === 0) {
-        throw new Error(`Booking ${booking.id} update failed`);
+        throw new Error(`Booking ${booking.id} save failed`);
       }
-      
-      if (data.length > 1) {
-        console.warn(`⚠️ Multiple bookings found with ID ${booking.id}, using first one`);
-      }
-      
+
       return mapBookingFromSupabase(data[0]);
     } else {
       // Create new booking - let Supabase generate UUID
@@ -679,6 +650,74 @@ export const supabaseAdapter = {
     if (error) throw error;
     // Room is available if no overlapping bookings found
     return (data || []).length === 0;
+  },
+
+  // Notifications (cross-device)
+  async getNotifications(): Promise<any[]> {
+    const { data, error } = await supabase
+      .from('notifications')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(50);
+    if (error) throw error;
+    return (data || []).map(n => ({
+      id: n.id,
+      title: n.title,
+      message: n.message,
+      type: n.type,
+      timestamp: n.timestamp,
+      read: n.read,
+      targetRoles: n.target_roles || undefined
+    }));
+  },
+
+  async addNotification(notif: any): Promise<void> {
+    const { error } = await supabase
+      .from('notifications')
+      .upsert({
+        id: notif.id,
+        title: notif.title,
+        message: notif.message,
+        type: notif.type,
+        timestamp: notif.timestamp,
+        read: notif.read,
+        target_roles: notif.targetRoles || null
+      }, { onConflict: 'id' });
+    if (error) throw error;
+  },
+
+  async markNotificationRead(id: string): Promise<void> {
+    const { error } = await supabase
+      .from('notifications')
+      .update({ read: true })
+      .eq('id', id);
+    if (error) throw error;
+  },
+
+  async clearNotifications(): Promise<void> {
+    const { error } = await supabase
+      .from('notifications')
+      .delete()
+      .neq('id', ''); // delete all
+    if (error) throw error;
+  },
+
+  subscribeToNotifications(callback: (notif: any) => void) {
+    return supabase
+      .channel('notifications-changes')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications' }, (payload) => {
+        const n = payload.new as any;
+        callback({
+          id: n.id,
+          title: n.title,
+          message: n.message,
+          type: n.type,
+          timestamp: n.timestamp,
+          read: n.read,
+          targetRoles: n.target_roles || undefined
+        });
+      })
+      .subscribe();
   },
 
   // Real-time subscriptions

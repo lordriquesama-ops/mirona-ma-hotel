@@ -1,8 +1,10 @@
 
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { BellIcon, CheckIcon, AlertTriangleIcon, UserIcon, TrashIcon, XCircleIcon } from './Icons';
 import { AppNotification, Role, User } from '../types';
 import { addNotification, getNotifications, markNotificationRead, clearAllNotifications } from '../services/db';
+import { supabaseAdapter } from '../services/supabase-adapter';
+import { USE_SUPABASE } from '../services/config';
 
 interface NotificationContextType {
   notifications: AppNotification[];
@@ -30,72 +32,128 @@ interface ProviderProps {
 export const NotificationProvider: React.FC<ProviderProps> = ({ children, user }) => {
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [toasts, setToasts] = useState<AppNotification[]>([]);
+  const channelRef = useRef<any>(null);
 
   useEffect(() => {
-    if (user) {
-        loadNotifications();
-        // Request browser permission for system notifications
-        if ('Notification' in window && Notification.permission === 'default') {
-            Notification.requestPermission();
-        }
+    if (!user) return;
+
+    loadNotifications();
+
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
     }
-  }, [user]);
 
-  // Polling for updates (Simulate real-time) - in PWA context, Service Worker is better but this is simple
-  useEffect(() => {
-      if(!user) return;
-      const interval = setInterval(loadNotifications, 30000); // Check every 30s
+    // Subscribe to real-time notifications from Supabase
+    if (USE_SUPABASE) {
+      channelRef.current = supabaseAdapter.subscribeToNotifications((notif: AppNotification) => {
+        // Only show if relevant to this user's role
+        if (notif.targetRoles && !notif.targetRoles.includes(user.role)) return;
+
+        setNotifications(prev => {
+          // Avoid duplicates
+          if (prev.some(n => n.id === notif.id)) return prev;
+          return [notif, ...prev];
+        });
+
+        // Show toast for incoming notifications from other devices
+        setToasts(prev => [...prev, notif]);
+        setTimeout(() => {
+          setToasts(prev => prev.filter(t => t.id !== notif.id));
+        }, 5000);
+
+        if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+          new window.Notification(notif.title, { body: notif.message, icon: '/icon-192x192.png' });
+        }
+      });
+    } else {
+      // Fallback polling every 30s when no Supabase
+      const interval = setInterval(loadNotifications, 30000);
       return () => clearInterval(interval);
+    }
+
+    return () => {
+      if (channelRef.current) {
+        channelRef.current.unsubscribe();
+        channelRef.current = null;
+      }
+    };
   }, [user]);
 
   const loadNotifications = async () => {
-      const all = await getNotifications();
-      // Filter for current user role
+    try {
+      let all: AppNotification[];
+      if (USE_SUPABASE) {
+        all = await supabaseAdapter.getNotifications();
+      } else {
+        all = await getNotifications();
+      }
       const relevant = all.filter(n => !n.targetRoles || (user && n.targetRoles.includes(user.role)));
-      // Sort desc
-      const sorted = relevant.sort((a,b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-      setNotifications(sorted);
+      setNotifications(relevant.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()));
+    } catch (err) {
+      console.warn('Failed to load notifications:', err);
+    }
   };
 
   const notify = async (title: string, message: string, type: AppNotification['type'] = 'info', targetRoles?: Role[]) => {
-      const newNotif: AppNotification = {
-          id: Date.now().toString() + Math.random().toString(),
-          title,
-          message,
-          type,
-          timestamp: new Date().toISOString(),
-          read: false,
-          targetRoles
-      };
+    const newNotif: AppNotification = {
+      id: Date.now().toString() + Math.random().toString(36).slice(2),
+      title,
+      message,
+      type,
+      timestamp: new Date().toISOString(),
+      read: false,
+      targetRoles
+    };
 
-      // 1. Add to Local State (Immediate UI update)
-      if (!targetRoles || (user && targetRoles.includes(user.role))) {
-          setNotifications(prev => [newNotif, ...prev]);
-          setToasts(prev => [...prev, newNotif]);
-          
-          // Auto remove toast
-          setTimeout(() => {
-              setToasts(prev => prev.filter(t => t.id !== newNotif.id));
-          }, 5000);
+    // Show locally immediately
+    if (!targetRoles || (user && targetRoles.includes(user.role))) {
+      setNotifications(prev => [newNotif, ...prev]);
+      setToasts(prev => [...prev, newNotif]);
+      setTimeout(() => {
+        setToasts(prev => prev.filter(t => t.id !== newNotif.id));
+      }, 5000);
 
-          // Browser Notification (If permitted and page hidden)
-          if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
-              new window.Notification(title, { body: message, icon: '/icon-192x192.png' });
-          }
+      if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+        new window.Notification(title, { body: message, icon: '/icon-192x192.png' });
       }
+    }
 
-      // 2. Persist
-      await addNotification(newNotif);
+    // Persist to Supabase (broadcasts to all devices via realtime)
+    try {
+      if (USE_SUPABASE) {
+        await supabaseAdapter.addNotification(newNotif);
+      } else {
+        await addNotification(newNotif);
+      }
+    } catch (err) {
+      console.warn('Failed to persist notification:', err);
+    }
   };
 
   const markAsRead = async (id: string) => {
-      setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
-      await markNotificationRead(id);
+    setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
+    try {
+      if (USE_SUPABASE) {
+        await supabaseAdapter.markNotificationRead(id);
+      } else {
+        await markNotificationRead(id);
+      }
+    } catch (err) {
+      console.warn('Failed to mark notification read:', err);
+    }
   };
 
   const clearAll = async () => {
-      setNotifications([]);
-      await clearAllNotifications();
+    setNotifications([]);
+    try {
+      if (USE_SUPABASE) {
+        await supabaseAdapter.clearNotifications();
+      } else {
+        await clearAllNotifications();
+      }
+    } catch (err) {
+      console.warn('Failed to clear notifications:', err);
+    }
   };
 
   const unreadCount = notifications.filter(n => !n.read).length;

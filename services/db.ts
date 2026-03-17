@@ -885,44 +885,41 @@ export const deleteGuest = async (id: string) => {
     await queueSync('guests', 'DELETE', { id });
 };
 export const upsertGuestFromBooking = async (booking: Booking) => {
-    // We need at least a name to create a profile
-    if (!booking.guestName) {
-        console.log('⏭️ Skipping guest creation: No guest name in booking');
+    if (!booking.guestName) return;
+
+    // Only create/update guest if we have a reliable identifier (phone or ID)
+    // Name-only matching causes duplicates - skip it
+    const hasIdentifier = booking.phone || booking.identification;
+    if (!hasIdentifier) {
+        console.log(`⏭️ Skipping guest upsert for "${booking.guestName}": no phone or ID`);
         return;
     }
-    
-    console.log(`👤 Creating/updating guest profile for: ${booking.guestName}`);
-    
+
+    console.log(`👤 Upserting guest: ${booking.guestName}`);
+
     const allBookings = await getBookings();
-    
-    // Try to find the guest by Phone, ID, or Name (as last resort)
-    const findGuestMatch = (b: Booking) => {
+
+    // Match bookings by phone OR identification only (no name fallback)
+    const guestBookings = allBookings.filter(b => {
         if (booking.phone && b.phone === booking.phone) return true;
         if (booking.identification && b.identification === booking.identification) return true;
-        if (!booking.phone && !booking.identification && b.guestName.toLowerCase() === booking.guestName.toLowerCase()) return true;
         return false;
-    };
+    });
 
-    const guestBookings = allBookings.filter(findGuestMatch);
-    
     const activeBookings = guestBookings.filter(b => b.status !== 'CANCELLED');
     const totalSpent = activeBookings.reduce((sum, b) => sum + (b.paidAmount || b.amount || 0), 0);
     const visits = activeBookings.length;
-    const lastVisit = activeBookings.length > 0 
-        ? activeBookings.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0].date 
+    const lastVisit = activeBookings.length > 0
+        ? activeBookings.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0].date
         : new Date().toISOString();
 
-    console.log(`   Visits: ${visits}, Total Spent: ${totalSpent}`);
-
     const guests = await getGuests();
-    let existing = guests.find(g => 
-        (booking.phone && g.phone === booking.phone) || 
-        (booking.identification && g.identification === booking.identification) ||
-        (!booking.phone && !booking.identification && g.name.toLowerCase() === booking.guestName.toLowerCase())
+    const existing = guests.find(g =>
+        (booking.phone && g.phone === booking.phone) ||
+        (booking.identification && g.identification === booking.identification)
     );
 
     if (existing) {
-        console.log(`   Updating existing guest: ${existing.id}`);
         existing.totalSpent = totalSpent;
         existing.visits = visits;
         existing.lastVisit = lastVisit;
@@ -936,7 +933,6 @@ export const upsertGuestFromBooking = async (booking: Booking) => {
         existing.isVip = totalSpent > 1000000;
         await saveGuest(existing);
     } else {
-        console.log(`   Creating new guest profile`);
         const newGuest: Guest = {
             id: booking.phone || booking.identification || `g-${Date.now()}`,
             name: booking.guestName,
@@ -944,12 +940,11 @@ export const upsertGuestFromBooking = async (booking: Booking) => {
             email: booking.email || '',
             identification: booking.identification || '',
             identificationType: booking.identificationType || 'National ID',
-            visits: visits,
-            totalSpent: totalSpent,
-            lastVisit: lastVisit,
+            visits,
+            totalSpent,
+            lastVisit,
             isVip: totalSpent > 1000000
         };
-        console.log(`   Guest ID: ${newGuest.id}`);
         await saveGuest(newGuest);
     }
 };
@@ -1078,9 +1073,31 @@ export const updateWebsiteContent = async (content: WebsiteContent) => {
 };
 
 export const getAuditLogs = async (): Promise<AuditLogEntry[]> => {
+    if (USE_SUPABASE) {
+        try {
+            const { data, error } = await (await import('./supabase')).supabase
+                .from('audit_logs')
+                .select('*')
+                .order('timestamp', { ascending: false })
+                .limit(500);
+            if (error) throw error;
+            return (data || []).map((r: any) => ({
+                id: r.id,
+                userId: r.user_id,
+                userName: r.user_name,
+                userRole: r.user_role,
+                action: r.action,
+                details: r.details,
+                timestamp: r.timestamp
+            }));
+        } catch (err) {
+            console.warn('Supabase getAuditLogs failed, falling back to IndexedDB:', err);
+        }
+    }
     const logs = await getAll<AuditLogEntry>('audit_logs');
     return logs.sort((a,b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 };
+
 export const logAction = async (user: User, action: string, details: string) => {
     const entry: AuditLogEntry = {
         userId: user.id,
@@ -1090,6 +1107,26 @@ export const logAction = async (user: User, action: string, details: string) => 
         details,
         timestamp: new Date().toISOString()
     };
+
+    // Write to Supabase (non-blocking, fire-and-forget)
+    if (USE_SUPABASE) {
+        (await import('./supabase')).supabase
+            .from('audit_logs')
+            .insert({
+                user_id: entry.userId,
+                user_name: entry.userName,
+                user_role: entry.userRole,
+                action: entry.action,
+                details: entry.details,
+                timestamp: entry.timestamp
+            })
+            .then(({ error }) => {
+                if (error) console.warn('Supabase audit log failed:', error.message);
+            });
+        return; // Don't wait - audit logs are non-critical
+    }
+
+    // Fallback: IndexedDB
     const db = await getDB();
     const transaction = db.transaction('audit_logs', 'readwrite');
     const store = transaction.objectStore('audit_logs');
@@ -1097,7 +1134,6 @@ export const logAction = async (user: User, action: string, details: string) => 
     return new Promise<void>((resolve, reject) => {
         const request = store.add(entry);
         request.onsuccess = async () => {
-            // Get the generated ID if it's auto-incremented
             const id = request.result;
             const fullEntry = { ...entry, id };
             await queueSync('audit_logs', 'CREATE', fullEntry);
