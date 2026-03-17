@@ -161,37 +161,40 @@ const Dashboard: React.FC<DashboardProps> = ({ role, onNavigate }) => {
                 overdueCount++;
             }
 
-            // REVENUE RECOGNITION: Only CHECKED_OUT guests, count actual amount paid
+            // REVENUE RECOGNITION: CHECKED_OUT guests (on checkout date) + CHECKED_IN guests who have paid (on check-in date)
             const isCheckedOut = bStatus === 'CHECKED_OUT';
+            const isCheckedIn = bStatus === 'CHECKED_IN';
             const totalPaid = b.paidAmount || 0;
             
-            // Revenue = actual amount paid (including partial payments)
+            // Revenue from checked-out guests - recognized on checkout date
             if (isCheckedOut && totalPaid > 0) {
                 const chargesTotal = b.charges ? b.charges.reduce((sum, c) => sum + c.amount, 0) : 0;
                 const totalGross = getTaxBreakdown(b.amount, taxRate).grandTotal;
                 const paymentRatio = totalGross > 0 ? totalPaid / totalGross : (totalPaid > 0 ? 1 : 0);
                 
-                // Calculate revenue based on what was actually paid
                 const roomOnlyRevenue = (b.amount - chargesTotal) * paymentRatio;
-                
-                // Room revenue is recognized on the check-out date
-                const checkOutDateStr = b.checkOut || '';
+                const checkOutDateStr = (b.checkOut || '').substring(0, 10);
                 const checkOutDateObj = new Date(checkOutDateStr);
 
                 if (checkOutDateStr === today) revenueToday += roomOnlyRevenue;
                 if (checkOutDateObj.getMonth() === currentMonth && checkOutDateObj.getFullYear() === currentYear) revenueMonth += roomOnlyRevenue;
 
-                // Service charges also recognized on check-out date (proportional to payment)
                 if (b.charges) {
                     b.charges.forEach(c => {
                         const chargeAmount = c.amount * paymentRatio;
-                        const checkOutDate = b.checkOut || '';
-                        const checkOutDateObj = new Date(checkOutDate);
-                        
-                        if (checkOutDate === today) revenueToday += chargeAmount;
-                        if (checkOutDateObj.getMonth() === currentMonth && checkOutDateObj.getFullYear() === currentYear) revenueMonth += chargeAmount;
+                        const checkOutDateObj2 = new Date(checkOutDateStr);
+                        if (checkOutDateStr === today) revenueToday += chargeAmount;
+                        if (checkOutDateObj2.getMonth() === currentMonth && checkOutDateObj2.getFullYear() === currentYear) revenueMonth += chargeAmount;
                     });
                 }
+            }
+
+            // Revenue from checked-in guests who have paid - recognized on check-in date (counted once, not spread)
+            if (isCheckedIn && totalPaid > 0) {
+                const checkInDateStr = (b.checkIn || '').substring(0, 10);
+                const checkInDateObj = new Date(checkInDateStr);
+                if (checkInDateStr === today) revenueToday += totalPaid;
+                if (checkInDateObj.getMonth() === currentMonth && checkInDateObj.getFullYear() === currentYear) revenueMonth += totalPaid;
             }
         });
 
@@ -269,10 +272,10 @@ const Dashboard: React.FC<DashboardProps> = ({ role, onNavigate }) => {
                     dayRev += roomRevenue + chargesRevenue;
                 }
 
-                // Also count CHECKED_IN bookings' paid amount on their check-in date
-                // so the chart isn't always empty if no checkouts yet
+                // Count CHECKED_IN bookings' paid amount on their check-in date
+                // Only if they haven't checked out yet (to avoid double-counting on checkout)
                 if (b.status === 'CHECKED_IN' && totalPaid > 0) {
-                    const checkInDate = (b.checkIn || b.checkInDate || '').substring(0, 10);
+                    const checkInDate = (b.checkIn || '').substring(0, 10);
                     if (checkInDate === dateStr) {
                         dayRev += totalPaid;
                     }

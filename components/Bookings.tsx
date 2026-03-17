@@ -523,10 +523,13 @@ const Bookings: React.FC<BookingsProps> = ({ user }) => {
       if (!checkoutBooking) return;
       
       const totalDue = getTaxBreakdown(checkoutBooking.amount, settings.taxRate).grandTotal;
+      const alreadyPaid = checkoutBooking.paidAmount || 0;
+      // Only add the remaining balance - don't overwrite if guest already paid at check-in
+      const finalPaid = Math.max(alreadyPaid, totalDue);
       const updatedBooking = { 
           ...checkoutBooking, 
           status: 'CHECKED_OUT' as const,
-          paidAmount: totalDue // Set paid amount to total due upon checkout confirmation
+          paidAmount: finalPaid
       };
       
       // Update Booking
@@ -1237,6 +1240,15 @@ const Bookings: React.FC<BookingsProps> = ({ user }) => {
                                                 <ReceiptIcon className="w-4 h-4"/>
                                             </button>
                                         )}
+                                        {booking.status === 'CHECKED_IN' && (booking.paidAmount || 0) > 0 && (
+                                            <button 
+                                                onClick={(e) => { e.stopPropagation(); setSelectedBooking(booking); }}
+                                                className="p-1.5 text-teal-500 hover:text-teal-700 hover:bg-teal-50 rounded-lg transition-colors border border-transparent hover:border-teal-100"
+                                                title="Print Payment Receipt"
+                                            >
+                                                <ReceiptIcon className="w-4 h-4"/>
+                                            </button>
+                                        )}
 
                                         {user.role === 'ADMIN' && (
                                             <button 
@@ -1842,6 +1854,9 @@ const Bookings: React.FC<BookingsProps> = ({ user }) => {
                     <h2 className="font-bold text-lg uppercase tracking-widest">{settings.hotelName || 'MIRONA MA'}</h2>
                     <p className="text-[10px] opacity-70">{settings.hotelEmail}</p>
                     <p className="text-[10px] opacity-70">Tel: {settings.hotelPhone}</p>
+                    <div className="mt-2 text-[10px] font-bold uppercase tracking-widest border border-black/20 rounded px-2 py-0.5 inline-block">
+                        {selectedBooking.status === 'CHECKED_IN' ? '— PAYMENT RECEIPT —' : '— FINAL RECEIPT —'}
+                    </div>
                 </div>
 
                 <div className="border-b border-dashed border-black/30 my-4"></div>
@@ -1927,6 +1942,22 @@ const Bookings: React.FC<BookingsProps> = ({ user }) => {
                         <span>TOTAL PAID:</span>
                         <span>{settings.currency} {(selectedBooking.paidAmount || 0).toLocaleString()}</span>
                     </div>
+                    {selectedBooking.status === 'CHECKED_IN' && (() => {
+                        const totalDue = getTaxBreakdown(selectedBooking.amount, settings.taxRate).grandTotal;
+                        const paid = selectedBooking.paidAmount || 0;
+                        const balance = totalDue - paid;
+                        return balance > 0 ? (
+                            <div className="flex justify-between text-[11px] border-t border-dashed border-black/20 pt-1 mt-1 font-bold text-black">
+                                <span>BALANCE DUE:</span>
+                                <span>{settings.currency} {balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                            </div>
+                        ) : null;
+                    })()}
+                    {selectedBooking.status === 'CHECKED_IN' && (
+                        <div className="mt-2 text-center text-[9px] font-bold uppercase tracking-widest border border-dashed border-black/30 rounded py-1">
+                            ★ GUEST CURRENTLY IN-HOUSE ★
+                        </div>
+                    )}
                 </div>
 
                 <div className="mt-8 text-center space-y-2">
