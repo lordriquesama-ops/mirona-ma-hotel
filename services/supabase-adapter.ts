@@ -253,8 +253,11 @@ export const supabaseAdapter = {
   async saveBooking(booking: Booking): Promise<Booking> {
     const bookingData = mapBookingToSupabase(booking);
     
-    // Always try update first if we have an ID, fall back to insert
-    if (booking.id && booking.id !== 'NEW') {
+    // UUID v4 pattern - only upsert if ID is a valid UUID
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(booking.id || '');
+    const isNew = !booking.id || booking.id === 'NEW' || !isUUID;
+
+    if (!isNew) {
       console.log('📝 Saving booking (upsert):', booking.id);
       
       const { data, error } = await supabase
@@ -277,12 +280,13 @@ export const supabaseAdapter = {
 
       return mapBookingFromSupabase(data[0]);
     } else {
-      // Create new booking - let Supabase generate UUID
+      // Non-UUID or new booking - let Supabase generate a proper UUID
+      console.log('➕ Inserting new booking (non-UUID id discarded):', booking.id);
       const { data, error } = await supabase
         .from(TABLES.BOOKINGS)
         .insert({
           ...bookingData,
-          booking_number: generateBookingNumber()
+          booking_number: booking.bookingNumber || generateBookingNumber()
         })
         .select()
         .single();
@@ -443,28 +447,50 @@ export const supabaseAdapter = {
       notes: guest.notes
     };
 
-    // Generate ID if not provided
-    const guestId = guest.id || `guest-${Date.now()}-${Math.random().toString(36).substring(2)}`;
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(guest.id || '');
 
-    // Use upsert to insert or update
-    const { data, error } = await supabase
-      .from(TABLES.GUESTS)
-      .upsert({
-        ...guestData,
-        id: guestId
-      }, {
-        onConflict: 'id'  // Update if ID already exists
-      })
-      .select()
-      .single();
-
-    if (error) {
-      console.error('❌ Supabase upsertGuest error:', error);
-      throw error;
+    // If we have a valid UUID, upsert by ID
+    if (isUUID) {
+      const { data, error } = await supabase
+        .from(TABLES.GUESTS)
+        .upsert({ ...guestData, id: guest.id }, { onConflict: 'id' })
+        .select()
+        .single();
+      if (error) { console.error('❌ Supabase upsertGuest error:', error); throw error; }
+      return mapGuestFromSupabase(data);
     }
-    
-    console.log('✅ Guest upserted to Supabase:', guestId);
-    return mapGuestFromSupabase(data);
+
+    // Non-UUID ID (phone number, identification, etc.) - try to find existing guest first
+    let existingId: string | null = null;
+    if (guest.phone || guest.identification) {
+      let query = supabase.from(TABLES.GUESTS).select('id').limit(1);
+      if (guest.phone) query = query.eq('phone', guest.phone);
+      else if (guest.identification) query = query.eq('identification', guest.identification);
+      const { data: existing } = await query.maybeSingle();
+      if (existing) existingId = existing.id;
+    }
+
+    if (existingId) {
+      // Update existing record
+      const { data, error } = await supabase
+        .from(TABLES.GUESTS)
+        .update(guestData)
+        .eq('id', existingId)
+        .select()
+        .single();
+      if (error) { console.error('❌ Supabase updateGuest error:', error); throw error; }
+      return mapGuestFromSupabase(data);
+    } else {
+      // Insert new guest - let Supabase generate UUID
+      const { data, error } = await supabase
+        .from(TABLES.GUESTS)
+        .insert(guestData)
+        .select()
+        .single();
+      if (error) { console.error('❌ Supabase insertGuest error:', error); throw error; }
+      console.log('✅ Guest inserted to Supabase:', data.id);
+      return mapGuestFromSupabase(data);
+    }
   },
 
   // Services

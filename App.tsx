@@ -61,7 +61,7 @@ const App: React.FC = () => {
       if ('serviceWorker' in navigator && 'SyncManager' in window) {
         try {
           const registration = await navigator.serviceWorker.ready;
-          await registration.sync.register('sync-data');
+          await (registration as any).sync.register('sync-data');
           console.log('✅ Background sync registered');
         } catch (error) {
           console.warn('⚠️ Background sync failed (expected in development):', error);
