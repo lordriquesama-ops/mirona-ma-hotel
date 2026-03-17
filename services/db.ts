@@ -7,7 +7,7 @@ import { supabaseAdapter } from './supabase-adapter';
 import { dualRead, dualWrite, markCacheFresh, isOnline, enqueueOfflineOp, invalidateCache } from './sync-manager';
 
 const DB_NAME = 'MironaDB';
-const DB_VERSION = 20; // Added offline_queue store
+const DB_VERSION = 21; // Fixed object store initialization
 
 const CATEGORY_ORDER = ['platinum', 'gold', 'silver', 'safari'];
 
@@ -104,6 +104,8 @@ export const initDB = (): Promise<IDBDatabase> => {
           if (db.objectStoreNames.contains('rooms')) db.deleteObjectStore('rooms');
           if (db.objectStoreNames.contains('room_categories')) db.deleteObjectStore('room_categories');
       }
+      
+      // Ensure all basic stores exist
       const stores = [
           'settings', 'bookings', 'room_categories', 'services_catalog',
           'expenses', 'shifts', 'rooms', 'website_content', 'notifications',
@@ -116,16 +118,19 @@ export const initDB = (): Promise<IDBDatabase> => {
           }
       });
 
+      // Users store with index
       if (!db.objectStoreNames.contains('users')) {
         const userStore = db.createObjectStore('users', { keyPath: 'id' });
         userStore.createIndex('username', 'username', { unique: true });
       }
       
+      // Guests store with index
       if (!db.objectStoreNames.contains('guests')) {
         const guestStore = db.createObjectStore('guests', { keyPath: 'id' });
         guestStore.createIndex('phone', 'phone', { unique: false });
       }
 
+      // Audit logs with auto-increment
       if (!db.objectStoreNames.contains('audit_logs')) {
          db.createObjectStore('audit_logs', { keyPath: 'id', autoIncrement: true });
       }

@@ -336,7 +336,7 @@ const Guests: React.FC<GuestsProps> = ({ user }) => {
                                                 </button>
                                                 <button 
                                                     onClick={() => confirmDelete(guest)}
-                                                    className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                                                    className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors active:scale-95"
                                                     title="Delete Profile"
                                                 >
                                                     <TrashIcon className="w-4 h-4" />
@@ -362,7 +362,7 @@ const Guests: React.FC<GuestsProps> = ({ user }) => {
 
             {/* EDIT GUEST MODAL */}
             {isEditModalOpen && editingGuest && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fade-in">
+                <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-20 bg-black/50 backdrop-blur-sm animate-fade-in">
                     <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
                         <div className="bg-teal-600 p-6 flex justify-between items-center">
                             <h3 className="text-lg font-bold text-white flex items-center gap-2">
@@ -464,7 +464,7 @@ const Guests: React.FC<GuestsProps> = ({ user }) => {
 
             {/* DELETE CONFIRMATION MODAL */}
             {guestToDelete && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+                <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-20 bg-black/60 backdrop-blur-sm animate-fade-in">
                     <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden border border-red-100">
                         <div className="p-6 text-center">
                             <div className="w-12 h-12 bg-red-50 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4">

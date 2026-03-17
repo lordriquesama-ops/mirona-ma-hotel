@@ -1274,7 +1274,7 @@ const Bookings: React.FC<BookingsProps> = ({ user }) => {
 
       {/* CHECK-IN CONFIRMATION MODAL */}
       {bookingToCheckIn && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+          <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-20 bg-black/60 backdrop-blur-sm animate-fade-in">
               <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden border border-blue-100">
                   <div className="p-6">
                       <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -1327,7 +1327,7 @@ const Bookings: React.FC<BookingsProps> = ({ user }) => {
 
       {/* CANCELLATION CONFIRMATION MODAL */}
       {bookingToCancel && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+          <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-20 bg-black/60 backdrop-blur-sm animate-fade-in">
               <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden border border-red-100">
                   <div className="p-6">
                       <div className="w-12 h-12 bg-red-50 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -1370,7 +1370,7 @@ const Bookings: React.FC<BookingsProps> = ({ user }) => {
 
       {/* DELETE CONFIRMATION MODAL */}
       {bookingToDelete && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+          <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-20 bg-black/60 backdrop-blur-sm animate-fade-in">
               <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden border border-red-100">
                   <div className="p-6 text-center">
                       <div className="w-12 h-12 bg-red-50 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -1402,8 +1402,8 @@ const Bookings: React.FC<BookingsProps> = ({ user }) => {
 
       {/* BOOKING FORM MODAL */}
       {showForm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
-             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden max-h-[95vh] flex flex-col">
+        <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-20 bg-black/60 backdrop-blur-sm animate-fade-in">
+             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden max-h-[85vh] flex flex-col">
                 {/* Sticky Header */}
                 <div className="bg-teal-700 p-5 flex justify-between items-center shrink-0">
                     <h3 className="text-lg font-bold text-white flex items-center gap-2">
@@ -1694,8 +1694,8 @@ const Bookings: React.FC<BookingsProps> = ({ user }) => {
 
       {/* SERVICE MODAL */}
       {showServiceModal && selectedBookingForService && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
-              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[80vh]">
+          <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-20 bg-black/60 backdrop-blur-sm animate-fade-in">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[75vh]">
                   <div className="bg-purple-700 p-6 flex justify-between items-center shrink-0">
                       <div>
                         <h3 className="text-lg font-bold text-white flex items-center gap-2">
@@ -1765,7 +1765,7 @@ const Bookings: React.FC<BookingsProps> = ({ user }) => {
 
       {/* CHECKOUT MODAL */}
       {checkoutBooking && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+          <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-20 bg-black/60 backdrop-blur-sm animate-fade-in">
               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
                   <div className="bg-orange-500 p-6 flex justify-between items-center text-white">
                       <h3 className="text-lg font-bold flex items-center gap-2">
